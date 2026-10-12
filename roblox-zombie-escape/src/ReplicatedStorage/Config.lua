@@ -1,6 +1,16 @@
 -- ModuleScript: ReplicatedStorage/Config
 -- All game tuning lives here.
 return {
+	-- Lobby / party settings
+	-- GamePlaceId = 0  -> single-place mode: lobby and game arena are in the same place (good for testing in Studio)
+	-- GamePlaceId = <id of your published game place> -> lobby teleports each party to its own PRIVATE server
+	GamePlaceId = 0,
+	LobbyPlaceId = 0, -- optional: place players return to after escaping / if they join the game place directly
+	PartyMax = 4,
+	LobbyRooms = 4,
+	StartCountdown = 5,
+	LobbyHeight = 500, -- lobby platform height (single-place mode keeps it far above the arena)
+
 	MapSize = 400,
 	GridStep = 120,
 

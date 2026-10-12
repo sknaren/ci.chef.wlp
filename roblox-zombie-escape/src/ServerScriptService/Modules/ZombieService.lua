@@ -87,7 +87,7 @@ local function nearestPlayer(position: Vector3)
 		local char = player.Character
 		local hrp = char and char:FindFirstChild("HumanoidRootPart")
 		local hum = char and char:FindFirstChildOfClass("Humanoid")
-		if hrp and hum and hum.Health > 0 then
+		if hrp and hum and hum.Health > 0 and player:GetAttribute("InGame") then
 			local d = (hrp.Position - position).Magnitude
 			if not bestDist or d < bestDist then
 				best, bestDist, bestHum = hrp, d, hum
@@ -114,7 +114,7 @@ local function randomSpawnPoint(): Vector3?
 			local ok = true
 			for _, player in Players:GetPlayers() do
 				local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-				if hrp and (Vector3.new(x, 0, z) - Vector3.new(hrp.Position.X, 0, hrp.Position.Z)).Magnitude < Config.ZombieMinSpawnDistance then
+				if hrp and player:GetAttribute("InGame") and (Vector3.new(x, 0, z) - Vector3.new(hrp.Position.X, 0, hrp.Position.Z)).Magnitude < Config.ZombieMinSpawnDistance then
 					ok = false
 					break
 				end
@@ -174,7 +174,13 @@ function ZombieService.start(map)
 			for _ in zombies do
 				count += 1
 			end
-			if count < Config.ZombieMax and #Players:GetPlayers() > 0 then
+			local active = 0
+			for _, pl in Players:GetPlayers() do
+				if pl:GetAttribute("InGame") then
+					active += 1
+				end
+			end
+			if count < Config.ZombieMax and active > 0 then
 				local point = randomSpawnPoint()
 				if point then
 					ZombieService.spawnZombie(point)

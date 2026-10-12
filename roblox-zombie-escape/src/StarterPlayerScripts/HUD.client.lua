@@ -44,6 +44,9 @@ hit.TextTransparency = 1
 hit.TextStrokeTransparency = 1
 
 RunService.Heartbeat:Connect(function()
+	local inGame = player:GetAttribute("InGame") == true
+	ammo.Visible = inGame
+	keys.Visible = inGame
 	local char = player.Character
 	local tool = char and char:FindFirstChildOfClass("Tool")
 	if tool and tool:GetAttribute("IsGun") then
