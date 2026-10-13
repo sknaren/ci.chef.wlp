@@ -263,25 +263,63 @@ const PCOL = [0x2a6adf,0xdf3b3b,0x3bbf55,0xe0b92a];                  // player c
 const PNAME = ['BLUE','RED','GREEN','YELLOW'];
 
 // ---------- 3D characters ----------
+// ---- shared geometry helpers for organic shapes ----
+const geoCache = {}, mcache = {};
+const Mc = c=>mcache[c]||(mcache[c]=M(c));
+function cylGeo(rt,rb,h,seg){ const k=[rt,rb,h,seg].join(); return geoCache[k]||(geoCache[k]=new THREE.CylinderGeometry(rt,rb,h,seg)); }
+const sphHi = new THREE.SphereGeometry(1,14,10), sphLo = new THREE.SphereGeometry(1,7,5);
+function cyl(rt,rb,h,m,x=0,y=0,z=0,seg=10){ const o=new THREE.Mesh(cylGeo(rt,rb,h,seg),m); o.position.set(x,y,z); return o; }
+function sph(r,m,x=0,y=0,z=0,sx=1,sy=1,sz=1,lo=false){ const o=new THREE.Mesh(lo?sphLo:sphHi,m); o.scale.set(r*sx,r*sy,r*sz); o.position.set(x,y,z); return o; }
+
+// Human-proportioned figure (~40 units tall). Faces +x, origin at the feet.
+// o: {pants,shirt,skin (materials), hair (colour), helmet (material), zombie, fine}
 function makeHuman(o){
+  const fine = !o.zombie && o.fine!==false, seg = fine?12:6, lo = !fine;
   const root = new THREE.Group(), body = new THREE.Group(); root.add(body);
-  const legs = [], arms = [];
-  for(const s of [-1,1]){
-    const leg = new THREE.Group(); leg.position.set(0,14,s*3.5);
-    leg.add(box(4.5,14,4.5,o.pants,0,-7,0)); body.add(leg); legs.push(leg);
+  const legs=[], shins=[], arms=[], elbows=[];
+  const shoe = Mc(0x1c1c1f);
+  for(const s of [-1,1]){                                        // legs: hip -> thigh -> knee -> shin -> shoe
+    const leg = new THREE.Group(); leg.position.set(0,16,s*3.1);
+    leg.add(cyl(2.9,2.4,8.4,o.pants,0,-4.2,0,seg));
+    leg.add(sph(2.4,o.pants,0,-8.3,0,1,1,1,lo));                  // knee
+    const shin = new THREE.Group(); shin.position.y = -8.3; leg.add(shin);
+    shin.add(cyl(2.3,1.8,8,o.pants,0,-4,0,seg));
+    shin.add(box(fine?7.4:6.4,2.4,3.8,shoe,1.7,-9.2,0));          // shoe
+    body.add(leg); legs.push(leg); shins.push(shin);
   }
-  const upper = new THREE.Group(); upper.position.y = 14; body.add(upper);
-  upper.add(box(7,16,13,o.shirt,0,8,0));
-  const head = box(9,9,9,o.skin,0,20.5,0); upper.add(head);
-  if(o.zombie){ upper.add(box(1,2,2,mat.blood,4.6,21,-2.2), box(1,2,2,mat.blood,4.6,21,2.2)); upper.add(box(1,3,5,mat.blood,4.6,16.5,0)); }
-  else if(o.helmet) upper.add(box(10,5,10,o.helmet,0,24,0));
-  else upper.add(box(10,4,10,M(0x3a2a1a),-0.3,25,0));
-  for(const s of [-1,1]){
-    const arm = new THREE.Group(); arm.position.set(0,15,s*8);
-    arm.add(box(4,14,4,o.shirt,0,-6,0)); arm.add(box(4.2,4,4.2,o.skin,0,-13,0));
-    upper.add(arm); arms.push(arm);
+  const upper = new THREE.Group(); upper.position.y = 16; body.add(upper);
+  const pelvis = cyl(4.7,4.5,4.4,o.pants,0,1.6,0,seg); pelvis.scale.x = 0.72; upper.add(pelvis);
+  const torso = cyl(6.3,4.7,13,o.shirt,0,9,0,seg); torso.scale.x = 0.6; upper.add(torso);          // chest tapers to waist
+  if(fine) upper.add(box(3.2,1.2,9.6,Mc(0x3a2a1c),0,3.2,0));                                        // belt
+  upper.add(sph(2.7,o.shirt,0,14.2,6.6,1,1,1,lo), sph(2.7,o.shirt,0,14.2,-6.6,1,1,1,lo));         // shoulders
+  upper.add(cyl(1.8,2,2.4,o.skin,0.2,16.4,0,8));                                                    // neck
+  // head
+  const head = new THREE.Group(); head.position.set(0.4,20.6,0); upper.add(head);
+  head.add(sph(4.4,o.skin,0,0,0,0.92,1.08,0.92,lo));
+  if(o.zombie){
+    head.add(box(0.6,1.7,1.7,new THREE.MeshBasicMaterial({color:0xff2020}),3.9,0.9,1.8), box(0.6,1.7,1.7,new THREE.MeshBasicMaterial({color:0xff2020}),3.9,0.9,-1.8));
+    head.add(box(0.5,1.8,3,mat.dark,3.9,-2,0));                                                      // gaping mouth
+    head.add(sph(4.5,Mc(0x2a2a22),-1.3,1.4,0.6,0.8,0.7,0.85,true));                                  // patchy hair
+  } else {
+    head.add(sph(4.62,Mc(o.hair||0x3a2a1a),-0.8,1,0,0.93,0.95,0.97,lo));                              // hair
+    if(fine){
+      head.add(sph(0.62,Mc(0x1a1410),3.8,0.7,1.7), sph(0.62,Mc(0x1a1410),3.8,0.7,-1.7));            // eyes
+      head.add(box(1.1,1.7,0.9,o.skin,4.2,-0.5,0), box(0.3,0.5,1.9,Mc(0x8a3a3a),3.9,-2.1,0));        // nose, mouth
+      head.add(sph(0.95,o.skin,0,-0.2,4.1), sph(0.95,o.skin,0,-0.2,-4.1));                           // ears
+    }
+    if(o.helmet) head.add(sph(5,o.helmet,-0.2,1,0,0.98,0.82,1.02,lo));
   }
-  root.userData = {body,legs,arms,upper,head};
+  for(const s of [-1,1]){                                          // arms: shoulder -> upper arm -> elbow -> forearm -> hand
+    const arm = new THREE.Group(); arm.position.set(0,14.2,s*6.9);
+    arm.add(cyl(1.9,1.7,7.2,o.shirt,0,-3.6,0,seg));
+    const elbow = new THREE.Group(); elbow.position.y = -7.2; arm.add(elbow);
+    elbow.add(sph(1.7,o.shirt,0,0,0,1,1,1,lo));
+    elbow.add(cyl(1.6,1.3,6.6,o.zombie?o.shirt:o.skin,0,-3.4,0,seg));
+    elbow.add(sph(1.8,o.skin,0,-7.2,0,1,1.1,0.9,lo));              // hand
+    upper.add(arm); arms.push(arm); elbows.push(elbow);
+  }
+  if(o.zombie) upper.add(box(0.5,5,5,mat.blood,3.2,9,1.5));          // blood-soaked chest
+  root.userData = {body,legs,shins,arms,elbows,upper,head};
   return root;
 }
 function attachGear(h){
@@ -289,19 +327,21 @@ function attachGear(h){
   const gunMat = new THREE.MeshLambertMaterial({color:0x333333});
   const gun = new THREE.Mesh(boxG,gunMat); up.add(gun);
   const back = new THREE.Group(); up.add(back);
-  back.add(box(5,13,10,M(0x3d4a2a),-6,9,0), box(5.4,4,10.4,M(0x2c3720),-6,13,0));
+  back.add(box(5,12,9.5,Mc(0x3d4a2a),-5.4,8,0), box(5.4,3.6,10,Mc(0x2c3720),-5.4,12.8,0), box(1,6,7,Mc(0x4a5a34),-8.2,7,0));
   const slung = new THREE.Group(); back.add(slung);
   Object.assign(h.userData,{gun,gunMat,slung});
 }
+const ZS = 1.12;
 function makeZombie(){
   const z = makeHuman({pants:mat.zpants, shirt:mat.zshirt, skin:mat.zskin, zombie:true});
   z.userData.arms.forEach(a=>a.rotation.z = Math.PI/2.1);
-  z.scale.setScalar(1.25);
+  z.userData.elbows.forEach(e=>e.rotation.z = 0.15);
+  z.scale.setScalar(ZS);
   return z;
 }
 function makeWalker(col){
-  const w = makeHuman({pants:mat.jeans, shirt:M(col), skin:mat.skin});
-  attachGear(w); w.scale.setScalar(1.25); return w;
+  const w = makeHuman({pants:mat.jeans, shirt:Mc(col), skin:mat.skin, hair:[0x3a2a1a,0x1a1a1a,0x7a4a20,0xb8902a][PCOL.indexOf(col)]});
+  attachGear(w); w.userData.elbows.forEach(e=>e.rotation.z=0.2); w.scale.setScalar(1.1); return w;
 }
 function makeBike(col){
   const root = new THREE.Group(), lean = new THREE.Group(); root.add(lean);
@@ -313,10 +353,10 @@ function makeBike(col){
   lean.add(box(30,3,4,frame,0,14,0), box(8,10,6,frame,-2,17,0));
   lean.add(box(3,12,3,mat.metal,14,15,0), box(3,3,18,mat.metal,12,22,0));
   lean.add(box(3,4,5,new THREE.MeshBasicMaterial({color:0xffffcc}),17,20,0));
-  const rider = makeHuman({pants:mat.jeans, shirt:M(col), skin:mat.skin, helmet:mat.helmet});
+  const rider = makeHuman({pants:mat.jeans, shirt:Mc(col), skin:mat.skin, helmet:mat.helmet});
   attachGear(rider);
-  rider.position.set(-4,4,0);
-  rider.userData.legs.forEach(l=>l.rotation.z = 1.0);
+  rider.position.set(-5,3,0); rider.scale.setScalar(0.92);
+  rider.userData.legs.forEach(l=>l.rotation.z = 1.05); rider.userData.shins.forEach(l=>l.rotation.z = -1.25); rider.userData.elbows.forEach(e=>e.rotation.z=0.3);
   rider.userData.arms.forEach(a=>a.rotation.z = Math.PI/2.2);
   lean.add(rider);
   root.userData = {lean,wf,wb,rider};
@@ -522,12 +562,12 @@ function refreshGear(P){
   for(const h of [P.walker,P.bikeMesh.userData.rider]){
     const u = h.userData;
     u.gun.visible = !!g;
-    if(g){ const w = WEAPONS[g.id]; u.gun.scale.set(w.len,3,3); u.gun.position.set(6+w.len/2,6,0); u.gunMat.color.setHex(w.color); }
+    if(g){ const w = WEAPONS[g.id]; u.gun.scale.set(w.len,3,3); u.gun.position.set(9+w.len*0.4,11.8,0); u.gunMat.color.setHex(w.color); }
     while(u.slung.children.length) u.slung.remove(u.slung.children[0]);
     let n = 0;
     P.bag.forEach((it,i)=>{ if(it.type==='gun'&&i!==P.eq&&n<3){
       const w = WEAPONS[it.id], gp = new THREE.Group(); gp.add(box(3,3,w.len+10,M(w.color)));
-      gp.position.set(-8-n*1.7,10,0); gp.rotation.x = n%2?0.75:-0.75; u.slung.add(gp); n++; } });
+      gp.position.set(-7.5-n*1.7,9,0); gp.rotation.x = n%2?0.75:-0.75; u.slung.add(gp); n++; } });
   }
 }
 
@@ -697,7 +737,7 @@ function findTarget(P){
     if(dd<46&&dd-14<bd){ best={type:'furn',f,x:f.x,y:f.y,h:f.ht+16}; bd=dd-14; }
   }
   const db = Math.hypot(P.bike.x-P.x,P.bike.y-P.y);
-  if(db<52&&db<bd) best={type:'bike',x:P.bike.x,y:P.bike.y,h:34};
+  if(db<70&&db<bd) best={type:'bike',x:P.bike.x,y:P.bike.y,h:34};
   return best;
 }
 function targetLabel(t){
@@ -1013,6 +1053,7 @@ function syncScene(dt){
       P.walker.rotation.y = -P.aim;
       const sw = P.moving? Math.sin(gtime*11)*0.7 : 0;
       u.legs[0].rotation.z = sw; u.legs[1].rotation.z = -sw;
+      u.shins[0].rotation.z = -(0.08+Math.max(0,-sw)*1.0); u.shins[1].rotation.z = -(0.08+Math.max(0,sw)*1.0);
       const armsUp = gun&&P.ammo>=0? Math.PI/2.2 : 0.15;
       u.upper.rotation.z = 0; u.upper.rotation.y = 0;
       u.arms[0].rotation.z = armsUp; u.arms[1].rotation.z = armsUp;
@@ -1044,9 +1085,10 @@ function syncScene(dt){
     if(z.hp>0){
       const sw = Math.sin(z.wob)*0.7;
       u.legs[0].rotation.z = sw; u.legs[1].rotation.z = -sw;
+      u.shins[0].rotation.z = -(0.1+Math.max(0,-sw)*0.7); u.shins[1].rotation.z = -(0.1+Math.max(0,sw)*0.7);
       u.arms[0].rotation.z = Math.PI/2.1 + Math.sin(z.wob*0.7)*0.15; u.arms[1].rotation.z = Math.PI/2.1 - Math.sin(z.wob*0.7)*0.15;
       u.head.rotation.z = Math.sin(z.wob*0.5)*0.15;
-      m.scale.setScalar(1.25*(1+z.hit*1.2));
+      m.scale.setScalar(ZS*(1+z.hit*1.2));
     }
   }
   for(const l of loots){ l.mesh.userData.item.position.y = 9+Math.sin(l.bob)*2.5; l.mesh.userData.item.rotation.y += dt*2; }
@@ -1228,7 +1270,7 @@ const CUT_LEN = 12;
 let cutT = 0, cut = null;
 function startCut(){
   cutT = 0;
-  const man = makeHuman({pants:mat.jeans, shirt:mat.shirt, skin:mat.skin}); man.scale.setScalar(1.25); scene.add(man);
+  const man = makeHuman({pants:mat.jeans, shirt:mat.shirt, skin:mat.skin}); man.scale.setScalar(1.1); scene.add(man);
   const zs = [];
   for(let i=0;i<7;i++){ const z = makeZombie(); scene.add(z); zs.push(z); }
   const pool = new THREE.Mesh(splatG,splatM); pool.rotation.x=-Math.PI/2; pool.position.y=2.7; pool.visible=false; scene.add(pool);
