@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dead City Rider 3D</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:monospace;cursor:crosshair}
+  canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
+  #ui{pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="ui"></canvas>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ===== DEAD CITY RIDER 3D =====
+   WASD / arrows : ride the bike     Mouse : aim
+   Click / Space : shoot             Ram zombies at speed to run them over
+   Enter / Space : skip cutscene     R : restart after death                */
+
+// ---------- renderer / overlay ----------
+const R = new THREE.WebGLRenderer({antialias:true});
+document.body.insertBefore(R.domElement, document.getElementById('ui'));
+const ui = document.getElementById('ui'), ctx = ui.getContext('2d');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0e16);
+scene.fog = new THREE.Fog(0x0b0e16, 500, 1500);
+const camera = new THREE.PerspectiveCamera(55, 1, 1, 4000);
+let W, H;
+function resize(){
+  W = ui.width = innerWidth; H = ui.height = innerHeight;
+  R.setSize(W,H); R.setPixelRatio(Math.min(devicePixelRatio,2)); camera.aspect = W/H; camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize); resize();
+
+// ---------- helpers ----------
+const rand = (a,b)=>a+Math.random()*(b-a);
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+const dist = (a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+const TAU = Math.PI*2;
+
+// ---------- input ----------
+const keys = {}; const mouse = {x:0,y:0,down:false};
+addEventListener('keydown',e=>{ keys[e.code]=true; if(e.code==='Space') e.preventDefault(); onKey(e.code); });
+addEventListener('keyup',e=>keys[e.code]=false);
+addEventListener('mousemove',e=>{ mouse.x=e.clientX; mouse.y=e.clientY; });
+addEventListener('mousedown',()=>{ mouse.down=true; audioInit(); if(state==='title') startGame(); });
+addEventListener('mouseup',()=>mouse.down=false);
+
+// ---------- tiny audio ----------
+let AC;
+function audioInit(){ if(!AC) try{ AC = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} }
+function beep(f,d,type='square',vol=0.05,slide=0){
+  if(!AC) return;
+  const o=AC.createOscillator(), g=AC.createGain();
+  o.type=type; o.frequency.value=f;
+  if(slide) o.frequency.exponentialRampToValueAtTime(Math.max(20,f+slide),AC.currentTime+d);
+  g.gain.value=vol; g.gain.exponentialRampToValueAtTime(0.0001,AC.currentTime+d);
+  o.connect(g); g.connect(AC.destination); o.start(); o.stop(AC.currentTime+d);
+}
+
+// ---------- lights ----------
+scene.add(new THREE.HemisphereLight(0x8899cc, 0x222233, 0.75));
+const moon = new THREE.DirectionalLight(0xaabbff, 0.55); moon.position.set(-300,600,200); scene.add(moon);
+const headlight = new THREE.PointLight(0xffe9b0, 1.3, 450, 1.5); scene.add(headlight);
+
+// ---------- shared materials / geometry ----------
+const M = c => new THREE.MeshLambertMaterial({color:c});
+const mat = {
+  skin:M(0xe8c39e), zskin:M(0x6f9a58), zshirt:M(0x6a5a45), zpants:M(0x3a3f4a), blood:M(0x8a0e0e),
+  wheel:M(0x111111), frame:M(0xcc2222), metal:M(0x888888), gun:M(0x222222), shirt:M(0xcc3333), jeans:M(0x2a4a8a),
+  jacket:M(0x2a4a8a), helmet:M(0x222233),
+};
+const boxG = new THREE.BoxGeometry(1,1,1);
+function box(w,h,d,m,x=0,y=0,z=0){ const o=new THREE.Mesh(boxG,m); o.scale.set(w,h,d); o.position.set(x,y,z); return o; }
+
+// ---------- 3D characters ----------
+// Builds a low-poly humanoid. Faces +x, origin at the feet.
+function makeHuman(o){
+  const root = new THREE.Group(), body = new THREE.Group(); root.add(body);
+  const legs = [], arms = [];
+  for(const s of [-1,1]){
+    const leg = new THREE.Group(); leg.position.set(0,14,s*3.5);
+    leg.add(box(4.5,14,4.5,o.pants,0,-7,0)); body.add(leg); legs.push(leg);
+  }
+  const upper = new THREE.Group(); upper.position.y = 14; body.add(upper);
+  upper.add(box(7,16,13,o.shirt,0,8,0));
+  const head = box(9,9,9,o.skin,0,20.5,0); upper.add(head);
+  if(o.zombie){ upper.add(box(1,2,2,mat.blood,4.6,21,-2.2), box(1,2,2,mat.blood,4.6,21,2.2)); upper.add(box(1,3,5,mat.blood,4.6,16.5,0)); }
+  else if(o.helmet) upper.add(box(10,5,10,mat.helmet,0,24,0));
+  else upper.add(box(10,4,10,M(0x3a2a1a),-0.3,25,0));
+  for(const s of [-1,1]){
+    const arm = new THREE.Group(); arm.position.set(0,15,s*8);
+    arm.add(box(4,14,4,o.shirt,0,-6,0)); arm.add(box(4.2,4,4.2,o.skin,0,-13,0));
+    upper.add(arm); arms.push(arm);
+  }
+  root.userData = {body,legs,arms,upper,head};
+  return root;
+}
+function makeZombie(){
+  const z = makeHuman({pants:mat.zpants, shirt:mat.zshirt, skin:mat.zskin, zombie:true});
+  z.userData.arms.forEach(a=>a.rotation.z = Math.PI/2.1);       // arms stretched forward
+  z.scale.setScalar(1.25);
+  return z;
+}
+function makeBike(){
+  const root = new THREE.Group(), lean = new THREE.Group(); root.add(lean);
+  const wg = new THREE.CylinderGeometry(9,9,3,16); wg.rotateX(Math.PI/2);
+  const wf = new THREE.Mesh(wg,mat.wheel), wb = new THREE.Mesh(wg,mat.wheel);
+  wf.position.set(16,9,0); wb.position.set(-16,9,0);
+  for(const w of [wf,wb]){ w.add(box(16,1.5,3.5,mat.metal)); lean.add(w); }
+  lean.add(box(30,3,4,mat.frame,0,14,0), box(8,10,6,mat.frame,-2,17,0));          // frame + tank
+  lean.add(box(3,12,3,mat.metal,14,15,0), box(3,3,18,mat.metal,12,22,0));         // fork + handlebar
+  const lamp = box(3,4,5,new THREE.MeshBasicMaterial({color:0xffffcc}),17,20,0); lean.add(lamp);
+  const rider = makeHuman({pants:mat.jeans, shirt:mat.jacket, skin:mat.skin, helmet:true});
+  rider.position.set(-4,4,0);
+  rider.userData.legs.forEach(l=>l.rotation.z = 1.0);                                // seated legs
+  rider.userData.arms.forEach(a=>a.rotation.z = Math.PI/2.2);                        // aiming arms
+  const gun = box(16,3,3,mat.gun,8,-11,0); rider.userData.upper.add(gun);
+  gun.position.set(10,6,0);
+  lean.add(rider);
+  root.userData = {lean,wf,wb,rider};
+  return root;
+}
+
+// ---------- world data ----------
+const ROAD = 160, BLOCK = 600, GRID = 4;
+const WORLD = BLOCK*GRID;
+const LO = -ROAD/2, HI = WORLD+ROAD/2;
+const walls = [], houses = [];
+const WALL_H = 54;
+
+function addWall(x,y,w,h,color){ if(w>0&&h>0) walls.push({x,y,w,h,color}); }
+function buildCityData(){
+  const T = 12, DOOR = 64, hw = 180, hh = 150;
+  const palette = [0x7a4b3a,0x566b7a,0x6b6a4a,0x7a5a6b,0x4f6b55];
+  for(let bi=0; bi<GRID; bi++) for(let bj=0; bj<GRID; bj++){
+    const bx = bi*BLOCK+ROAD/2, by = bj*BLOCK+ROAD/2;
+    for(let r=0;r<2;r++) for(let c=0;c<2;c++){
+      const hx = bx+20+c*(hw+40), hy = by+20+r*(hh+100);
+      const color = palette[(bi*3+bj*5+r*2+c)%5];
+      houses.push({x:hx,y:hy,w:hw,h:hh,color});
+      addWall(hx,hy,T,hh,color); addWall(hx+hw-T,hy,T,hh,color);                       // side walls
+      const dx = hx+hw/2-DOOR/2;
+      const backY = r===0 ? hy : hy+hh-T, frontY = r===0 ? hy+hh-T : hy;               // doors face the alley
+      addWall(hx,backY,hw,T,color);
+      addWall(hx,frontY,dx-hx,T,color); addWall(dx+DOOR,frontY,hx+hw-(dx+DOOR),T,color);
+    }
+  }
+}
+
+// ---------- 3D city ----------
+function roadTexture(){
+  const c = document.createElement('canvas'); c.width=64; c.height=128;
+  const g = c.getContext('2d'); g.fillStyle='#34353a'; g.fillRect(0,0,64,128);
+  g.fillStyle='rgba(255,255,255,.04)'; for(let i=0;i<120;i++) g.fillRect(Math.random()*64,Math.random()*128,2,2);
+  g.fillStyle='#d8c24a'; g.fillRect(30,10,4,50); g.fillStyle='#bbb'; g.fillRect(2,0,2,128); g.fillRect(60,0,2,128);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
+}
+function buildCityMeshes(){
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(7000,7000), M(0x20281f));
+  ground.rotation.x = -Math.PI/2; ground.position.y = -1; scene.add(ground);
+  const len = HI-LO;
+  for(let k=0;k<=GRID;k++) for(const vertical of [true,false]){
+    const tex = roadTexture(); tex.repeat.set(1,len/256);
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(ROAD,len), new THREE.MeshLambertMaterial({map:tex}));
+    m.rotation.x = -Math.PI/2; if(!vertical) m.rotation.z = Math.PI/2;
+    m.position.set(vertical?k*BLOCK:WORLD/2, vertical?0.05:0.1, vertical?WORLD/2:k*BLOCK);
+    scene.add(m);
+  }
+  const pave = M(0x50534b);
+  for(let i=0;i<GRID;i++) for(let j=0;j<GRID;j++){
+    scene.add(box(BLOCK-ROAD,2,BLOCK-ROAD,pave,i*BLOCK+BLOCK/2,1,j*BLOCK+BLOCK/2));
+  }
+  const floorM = M(0x8a7a62), roofM = M(0x2a2a30), lampM = new THREE.MeshBasicMaterial({color:0xffe9a0});
+  for(const h of houses){
+    scene.add(box(h.w,1.5,h.h,floorM,h.x+h.w/2,2,h.y+h.h/2));
+    const f = box(h.w*0.35,8,h.h*0.25,M(0x5a3d2b),h.x+h.w/2+(h.w*0.25),6,h.y+h.h/2); scene.add(f);       // furniture
+    // low roof ridge cap on the wall tops so houses read as buildings
+    scene.add(box(h.w+4,3,3,M(h.color),h.x+h.w/2,WALL_H+1,h.y+1.5), box(h.w+4,3,3,M(h.color),h.x+h.w/2,WALL_H+1,h.y+h.h-1.5));
+  }
+  const wallMats = {};
+  for(const w of walls){
+    wallMats[w.color] = wallMats[w.color] || M(w.color);
+    scene.add(box(w.w,WALL_H,w.h,wallMats[w.color],w.x+w.w/2,WALL_H/2,w.y+w.h/2));
+  }
+  // street lamps
+  for(let i=0;i<=GRID;i++) for(let j=0;j<=GRID;j++){
+    const x = i*BLOCK+ROAD/2-6, z = j*BLOCK+ROAD/2-6;
+    scene.add(box(4,70,4,mat.metal,x,35,z), box(8,5,8,lampM,x,72,z));
+  }
+}
+
+// ---------- game state ----------
+let state = 'cutscene';                  // cutscene | title | play | dead
+let player, bikeMesh, zombies=[], bullets=[], loots=[], splats=[], particles=[];
+let kills, cash, spawnT, lootT, time, shake=0;
+const groundPlane = new THREE.Plane(new THREE.Vector3(0,1,0),0);
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), hitPt = new THREE.Vector3();
+
+function clearList(list){ for(const o of list){ scene.remove(o.mesh); } list.length = 0; }
+
+function startGame(){
+  endCut();
+  clearList(zombies); clearList(bullets); clearList(loots); clearList(splats); clearList(particles);
+  player = {x:WORLD/2-BLOCK/2, y:BLOCK, a:0, v:0, r:14, hp:100, ammo:40, cool:0, hurt:0, aim:0};
+  bikeMesh.visible = true;
+  kills=0; cash=0; spawnT=0; lootT=0; time=0; shake=0;
+  for(let i=0;i<24;i++) spawnZombie(true);
+  for(const h of houses) if(Math.random()<0.75) spawnLoot(h);
+  for(let i=0;i<30;i++) spawnLoot(null);
+  state='play';
+}
+
+function spawnZombie(far){
+  for(let t=0;t<30;t++){
+    const x = rand(LO,HI), y = rand(LO,HI);
+    if(player && Math.hypot(x-player.x,y-player.y) < (far?450:700)) continue;
+    if(inWall(x,y,12)) continue;
+    const mesh = makeZombie(); mesh.position.set(x,0,y); scene.add(mesh);
+    zombies.push({x,y,a:rand(0,TAU),hp:3+(time>60?1:0)+(time>150?1:0),r:12,
+      spd:rand(45,85)+Math.min(time*0.2,40),cool:0,wob:rand(0,9),hit:0,mesh});
+    return;
+  }
+}
+function inWall(x,y,r){ return walls.some(w=>x+r>w.x&&x-r<w.x+w.w&&y+r>w.y&&y-r<w.y+w.h); }
+
+const lootStyle = {ammo:0xffd400, med:0xff3b3b, cash:0x3bff6a};
+function makeLootMesh(kind){
+  const g = new THREE.Group(), c = lootStyle[kind];
+  const emissive = new THREE.MeshLambertMaterial({color:c, emissive:c, emissiveIntensity:0.55});
+  const item = new THREE.Group();
+  if(kind==='ammo') item.add(box(12,8,16,M(0x8a7a2a)), box(10,2,14,emissive,0,5,0));
+  if(kind==='med'){ item.add(box(14,10,14,M(0xffffff)), box(10,1,3,M(0xcc0000),0,5.5,0), box(3,1,10,M(0xcc0000),0,5.5,0)); }
+  if(kind==='cash') item.add(box(16,4,10,M(0x2e9e45)), box(17,1.2,4,M(0xcfeccf),0,2.2,0), box(12,4,8,M(0x2e9e45),0,4,0));
+  item.position.y = 8; g.add(item);
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(2,2,90,6), new THREE.MeshBasicMaterial({color:c,transparent:true,opacity:0.28}));
+  beam.position.y = 50; g.add(beam);
+  g.userData.item = item;
+  return g;
+}
+function addLoot(x,y,kind){
+  const mesh = makeLootMesh(kind); mesh.position.set(x,0,y); scene.add(mesh);
+  loots.push({x,y,kind,r:10,bob:rand(0,6),mesh});
+}
+function spawnLoot(house){
+  const kinds=['ammo','med','cash','cash'];
+  const kind = kinds[Math.floor(Math.random()*kinds.length)];
+  let x,y;
+  if(house){ x=house.x+rand(30,house.w-30); y=house.y+rand(30,house.h-30); }
+  else {
+    const onV = Math.random()<0.5, k = Math.floor(rand(0,GRID+1))*BLOCK;
+    x = onV ? k+rand(-55,55) : rand(LO,HI); y = onV ? rand(LO,HI) : k+rand(-55,55);
+  }
+  addLoot(x,y,kind);
+}
+
+// ---------- collision ----------
+function pushOut(o){
+  let hit=false;
+  for(const w of walls){
+    const cx = clamp(o.x,w.x,w.x+w.w), cy = clamp(o.y,w.y,w.y+w.h);
+    const dx = o.x-cx, dy = o.y-cy, d = Math.hypot(dx,dy);
+    if(d < o.r){
+      hit = true;
+      if(d>0.001){ o.x += dx/d*(o.r-d); o.y += dy/d*(o.r-d); } else o.y -= o.r;
+    }
+  }
+  const before=o.x+o.y;
+  o.x = clamp(o.x,LO+o.r,HI-o.r); o.y = clamp(o.y,LO+o.r,HI-o.r);
+  return hit || before!==o.x+o.y;
+}
+
+// ---------- effects ----------
+const partG = new THREE.BoxGeometry(3,3,3), partM = new THREE.MeshBasicMaterial({color:0xaa1111});
+function blood(x,y,n){
+  for(let i=0;i<n && particles.length<150;i++){
+    const mesh = new THREE.Mesh(partG,partM); mesh.position.set(x,rand(8,25),y); scene.add(mesh);
+    particles.push({x,y,h:mesh.position.y,vx:rand(-130,130),vy:rand(-130,130),vh:rand(20,120),life:rand(.3,.6),mesh});
+  }
+}
+const splatG = new THREE.CircleGeometry(1,14), splatM = new THREE.MeshBasicMaterial({color:0x5a0808});
+function addSplat(x,y,r){
+  const mesh = new THREE.Mesh(splatG,splatM); mesh.rotation.x = -Math.PI/2; mesh.rotation.z = rand(0,TAU);
+  mesh.scale.set(r,r*0.7,1); mesh.position.set(x,2.6,y); scene.add(mesh);
+  splats.push({mesh}); if(splats.length>200){ scene.remove(splats.shift().mesh); }
+}
+function killZombie(z){
+  kills++; z.hp=0; z.dead=3; addSplat(z.x,z.y,rand(12,20));
+  z.mesh.userData.body.rotation.z = -Math.PI/2; z.mesh.userData.body.position.y = 5;   // topple over
+  if(Math.random()<0.25) addLoot(z.x,z.y,Math.random()<.5?'ammo':'cash');
+}
+const bulletG = new THREE.SphereGeometry(2.5,6,6), bulletM = new THREE.MeshBasicMaterial({color:0xffe27a});
+
+// ---------- update ----------
+function update(dt){
+  time += dt; shake = Math.max(0,shake-dt*20);
+  const p = player;
+
+  const up = keys.KeyW||keys.ArrowUp, dn = keys.KeyS||keys.ArrowDown;
+  const lf = keys.KeyA||keys.ArrowLeft, rt = keys.KeyD||keys.ArrowRight;
+  if(up) p.v += 340*dt; else if(dn) p.v -= 300*dt;
+  else p.v -= Math.sign(p.v)*Math.min(Math.abs(p.v),140*dt);
+  p.v = clamp(p.v,-110,330);
+  p.steer = (rt?1:0)-(lf?1:0);
+  p.a += p.steer*2.6*dt*clamp(p.v/110,-1,1);
+  p.x += Math.cos(p.a)*p.v*dt; p.y += Math.sin(p.a)*p.v*dt;
+  if(pushOut(p)){ if(Math.abs(p.v)>140){ p.hp -= 3; shake=6; beep(80,.15,'sawtooth',.08);} p.v *= 0.5; }
+  p.hurt = Math.max(0,p.hurt-dt);
+
+  // aim: cast mouse ray onto the ground
+  ndc.set(mouse.x/W*2-1, -(mouse.y/H)*2+1); ray.setFromCamera(ndc,camera);
+  if(ray.ray.intersectPlane(groundPlane,hitPt)) p.aim = Math.atan2(hitPt.z-p.y, hitPt.x-p.x);
+  p.cool -= dt;
+  const fire = mouse.down||keys.Space;
+  if(fire && p.cool<=0 && p.ammo>0){
+    p.cool = 0.12; p.ammo--;
+    const sp = rand(-0.05,0.05), a = p.aim;
+    const mesh = new THREE.Mesh(bulletG,bulletM); scene.add(mesh);
+    bullets.push({x:p.x+Math.cos(a)*24,y:p.y+Math.sin(a)*24,h:22,
+      vx:Math.cos(a+sp)*750+Math.cos(p.a)*p.v*0.5, vy:Math.sin(a+sp)*750+Math.sin(p.a)*p.v*0.5, life:0.8, mesh});
+    beep(220,.08,'square',.05,-120);
+  } else if(fire && p.cool<=0){ p.cool=0.4; beep(90,.05,'square',.03); }
+
+  for(const b of bullets){
+    b.x+=b.vx*dt; b.y+=b.vy*dt; b.life-=dt;
+    if(inWall(b.x,b.y,2)) b.life=0;
+    for(const z of zombies) if(z.hp>0 && Math.hypot(z.x-b.x,z.y-b.y)<z.r+3){
+      z.hp--; z.hit=0.15; b.life=0; blood(z.x,z.y,4);
+      z.x += b.vx*0.01; z.y += b.vy*0.01;
+      if(z.hp<=0) killZombie(z);
+      break;
+    }
+  }
+  bullets = bullets.filter(b=>{ if(b.life>0) return true; scene.remove(b.mesh); return false; });
+
+  for(const z of zombies){
+    if(z.hp<=0){ z.dead -= dt; continue; }
+    z.hit=Math.max(0,z.hit-dt); z.cool-=dt; z.wob+=dt*6;
+    const d = dist(z,p);
+    if(d<520){ const t=Math.atan2(p.y-z.y,p.x-z.x); z.a += Math.atan2(Math.sin(t-z.a),Math.cos(t-z.a))*Math.min(1,dt*6); }
+    else if(Math.random()<dt*0.5) z.a += rand(-1,1);
+    const s = (d<520? z.spd : z.spd*0.35) * (z.hit>0?0.2:1);
+    z.x += Math.cos(z.a)*s*dt; z.y += Math.sin(z.a)*s*dt;
+    pushOut(z);
+    for(const o of zombies) if(o!==z && o.hp>0){
+      const dx=z.x-o.x, dy=z.y-o.y, dd=Math.hypot(dx,dy);
+      if(dd>0 && dd<z.r*1.6){ z.x+=dx/dd*30*dt; z.y+=dy/dd*30*dt; }
+    }
+    if(d < z.r+p.r){
+      if(Math.abs(p.v) > 120){ z.hp -= 3; blood(z.x,z.y,8); p.v *= 0.85; shake=4; beep(120,.1,'sawtooth',.06);
+        if(z.hp<=0) killZombie(z); }
+      else if(z.cool<=0){ z.cool=0.8; p.hp -= 8; p.hurt=0.25; shake=5; beep(70,.15,'sawtooth',.07); }
+    }
+    if(d>1400) z.gone=true;
+  }
+  zombies = zombies.filter(z=>{ if(z.gone || (z.hp<=0 && z.dead<=0)){ scene.remove(z.mesh); return false; } return true; });
+
+  for(const l of loots){
+    l.bob += dt*4;
+    if(Math.hypot(l.x-p.x,l.y-p.y)<l.r+p.r+6){
+      l.taken=true; beep(660,.12,'sine',.06,300);
+      if(l.kind==='ammo') p.ammo+=20;
+      if(l.kind==='med') p.hp=Math.min(100,p.hp+30);
+      if(l.kind==='cash') cash+=50;
+    }
+  }
+  loots = loots.filter(l=>{ if(!l.taken) return true; scene.remove(l.mesh); return false; });
+
+  spawnT -= dt;
+  const cap = Math.min(30+Math.floor(time/6),80);
+  if(spawnT<=0 && zombies.length<cap){ spawnZombie(false); spawnT = Math.max(0.25,1.2-time/150); }
+  lootT -= dt;
+  if(lootT<=0 && loots.length<60){ spawnLoot(Math.random()<0.6?houses[Math.floor(Math.random()*houses.length)]:null); lootT=4; }
+
+  for(const q of particles){ q.x+=q.vx*dt; q.y+=q.vy*dt; q.h+=q.vh*dt; q.vh-=300*dt; q.life-=dt; q.vx*=0.95; q.vy*=0.95; }
+  particles = particles.filter(q=>{ if(q.life>0 && q.h>0) return true; scene.remove(q.mesh); return false; });
+
+  if(p.hp<=0){ state='dead'; beep(60,1,'sawtooth',.1,-30); }
+}
+
+// ---------- sync meshes + camera ----------
+function syncScene(dt){
+  const p = player, ud = bikeMesh.userData;
+  bikeMesh.position.set(p.x,0,p.y); bikeMesh.rotation.y = -p.a;
+  ud.lean.rotation.x = -(p.steer||0)*0.28*clamp(p.v/200,-1,1);
+  ud.wf.rotation.z -= p.v*dt/9; ud.wb.rotation.z -= p.v*dt/9;
+  ud.rider.userData.upper.rotation.y = -(p.aim - p.a);                      // rider twists to aim
+  headlight.position.set(p.x+Math.cos(p.a)*60,60,p.y+Math.sin(p.a)*60);
+
+  for(const z of zombies){
+    const m = z.mesh, u = m.userData;
+    m.position.set(z.x,0,z.y); m.rotation.y = -z.a;
+    if(z.hp>0){
+      const sw = Math.sin(z.wob)*0.7;
+      u.legs[0].rotation.z = sw; u.legs[1].rotation.z = -sw;
+      u.arms[0].rotation.z = Math.PI/2.1 + Math.sin(z.wob*0.7)*0.15; u.arms[1].rotation.z = Math.PI/2.1 - Math.sin(z.wob*0.7)*0.15;
+      u.head.rotation.z = Math.sin(z.wob*0.5)*0.15;
+      m.scale.setScalar(1.25*(1+z.hit*1.2));
+    }
+  }
+  for(const l of loots){ l.mesh.userData.item.position.y = 9+Math.sin(l.bob)*2.5; l.mesh.userData.item.rotation.y += dt*2; }
+  for(const b of bullets) b.mesh.position.set(b.x,b.h,b.y);
+  for(const q of particles) q.mesh.position.set(q.x,q.h,q.y);
+
+  // chase camera (fixed heading so WASD stays intuitive)
+  const sx = shake? rand(-shake,shake):0, sy = shake? rand(-shake,shake):0;
+  const tx = p.x - Math.cos(p.a)*0, tz = p.y;
+  camera.position.lerp(new THREE.Vector3(tx+sx, 330+sy, tz+300), Math.min(1,dt*8));
+  camera.lookAt(p.x,10,p.y-20);
+}
+
+// ---------- HUD (2D overlay) ----------
+function drawHUD(){
+  ctx.font='bold 16px monospace'; ctx.textAlign='left';
+  ctx.fillStyle='rgba(0,0,0,.55)'; ctx.fillRect(10,10,230,96);
+  ctx.fillStyle='#333'; ctx.fillRect(20,20,200,14);
+  ctx.fillStyle=player.hp>35?'#3c3':'#e33'; ctx.fillRect(20,20,2*Math.max(0,player.hp),14);
+  ctx.fillStyle='#fff';
+  ctx.fillText('HP '+Math.ceil(Math.max(0,player.hp)),24,48);
+  ctx.fillText('AMMO '+player.ammo,20,68);
+  ctx.fillText('KILLS '+kills+'   $'+cash,20,90);
+  const m=130, s=m/(HI-LO), mx=W-m-10, my=10;
+  ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(mx,my,m,m);
+  ctx.fillStyle='#e22'; for(const z of zombies) if(z.hp>0) ctx.fillRect(mx+(z.x-LO)*s,my+(z.y-LO)*s,2,2);
+  ctx.fillStyle='#5f5'; for(const l of loots) ctx.fillRect(mx+(l.x-LO)*s,my+(l.y-LO)*s,2,2);
+  ctx.fillStyle='#4af'; ctx.fillRect(mx+(player.x-LO)*s-2,my+(player.y-LO)*s-2,5,5);
+  if(player.ammo<=0){ ctx.fillStyle='#fc3'; ctx.textAlign='center'; ctx.fillText('OUT OF AMMO - find loot in the houses!',W/2,H-30); }
+  if(player.hurt>0){ ctx.fillStyle=`rgba(200,0,0,${player.hurt*1.2})`; ctx.fillRect(0,0,W,H); }
+  // crosshair
+  ctx.strokeStyle='#fff'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(mouse.x,mouse.y,9,0,TAU);
+  ctx.moveTo(mouse.x-14,mouse.y); ctx.lineTo(mouse.x-5,mouse.y); ctx.moveTo(mouse.x+14,mouse.y); ctx.lineTo(mouse.x+5,mouse.y);
+  ctx.moveTo(mouse.x,mouse.y-14); ctx.lineTo(mouse.x,mouse.y-5); ctx.moveTo(mouse.x,mouse.y+14); ctx.lineTo(mouse.x,mouse.y+5); ctx.stroke();
+}
+function drawTitle(){
+  ctx.fillStyle='#050608'; ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center'; ctx.fillStyle='#c22'; ctx.font='bold 64px monospace'; ctx.fillText('DEAD CITY RIDER',W/2,H/2-60);
+  ctx.fillStyle='#ccc'; ctx.font='18px monospace';
+  ['W/A/S/D or arrows - ride the bike','Mouse - aim      Click / Space - shoot','Ram zombies at speed to run them over',
+   'Ride into houses through their doors to find loot: ammo, medkits, cash','','Click or press ENTER to start'].forEach((t,i)=>ctx.fillText(t,W/2,H/2+i*28));
+}
+function drawDead(){
+  drawHUD();
+  ctx.fillStyle='rgba(0,0,0,.7)'; ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center'; ctx.fillStyle='#d22'; ctx.font='bold 60px monospace'; ctx.fillText('YOU WERE EATEN',W/2,H/2-30);
+  ctx.fillStyle='#ddd'; ctx.font='22px monospace';
+  ctx.fillText(`Kills: ${kills}   Cash: $${cash}   Survived: ${Math.floor(time)}s`,W/2,H/2+20);
+  ctx.fillText('Press R to ride again',W/2,H/2+60);
+}
+
+// ---------- 3D cutscene: a man is eaten ----------
+const CUT_LEN = 12;
+let cutT = 0, cut = null;
+function startCut(){
+  cutT = 0;
+  const man = makeHuman({pants:mat.jeans, shirt:mat.shirt, skin:mat.skin}); man.scale.setScalar(1.25); scene.add(man);
+  const zs = [];
+  for(let i=0;i<7;i++){ const z = makeZombie(); scene.add(z); zs.push(z); }
+  const pool = new THREE.Mesh(splatG,splatM); pool.rotation.x=-Math.PI/2; pool.position.y=2.7; pool.visible=false; scene.add(pool);
+  cut = {man,zs,pool,mx0:1100,mz:1200};
+  bikeMesh.visible = false;
+  camera.position.set(1000,60,1300);
+}
+function endCut(){
+  if(!cut) return;
+  scene.remove(cut.man, cut.pool); cut.zs.forEach(z=>scene.remove(z)); cut = null;
+}
+function updateCut(dt){
+  cutT += dt; const T = cutT, c = cut;
+  const walk = Math.min(T,3.2), mx = c.mx0+walk*28, mz = c.mz;
+  const mu = c.man.userData, fall = T>3.4 ? Math.min((T-3.4)*2.5,1) : 0;
+  c.man.position.set(mx,0,mz);
+  if(fall===0){                                              // walking, then panicking
+    const s = Math.sin(T*7)*0.6; mu.legs[0].rotation.z = s; mu.legs[1].rotation.z = -s;
+    mu.arms[0].rotation.z = -s*0.7; mu.arms[1].rotation.z = s*0.7;
+    if(T>2.4){ mu.upper.rotation.y = Math.sin(T*8)*0.5; mu.arms.forEach(a=>a.rotation.z = Math.PI*0.85+Math.sin(T*18)*0.4); }  // hands up, flailing
+  } else {
+    mu.body.rotation.z = fall*Math.PI/2; mu.body.position.y = fall*6;
+    mu.legs.forEach((l,i)=>l.rotation.z = Math.sin(T*12+i*2)*0.5*(T<6.5?1:0.1));
+    mu.arms.forEach((a,i)=>a.rotation.z = Math.PI*0.8+Math.sin(T*16+i)*0.5*(T<6.5?1:0.1));
+  }
+  // zombies shamble in from both sides, then crowd around and feed
+  const p = clamp((T-0.4)/2.8,0,1), e = p*p*(3-2*p);
+  c.zs.forEach((z,i)=>{
+    const side = i%2?1:-1, sx = mx+side*(450+i*55), sz = mz+(i-3)*28;
+    const ang = 0.4+i*(TAU/7), fx = mx+Math.cos(ang)*28, fz = mz+Math.sin(ang)*22;
+    const x = sx+(fx-sx)*e, zz = sz+(fz-sz)*e;
+    z.position.set(x,0,zz); z.rotation.y = -Math.atan2(mz-zz, mx-x);
+    const u = z.userData;
+    if(p<1){ const s = Math.sin(T*6+i)*0.7; u.legs[0].rotation.z = s; u.legs[1].rotation.z = -s; }
+    else {                                                   // crouch and bob over the body
+      u.body.rotation.z = -0.7 + Math.sin(T*9+i*1.7)*0.18; u.legs.forEach(l=>l.rotation.z = 0.5);
+      u.arms.forEach(a=>a.rotation.z = Math.PI/2.3);
+    }
+  });
+  c.pool.visible = T>3.6;
+  if(c.pool.visible){ const r = Math.min((T-3.6)*12,55); c.pool.scale.set(r,r*0.8,1); c.pool.position.set(mx+8,2.7,mz); }
+  if(T>3.8 && T<8 && Math.random()<0.5) blood(mx+rand(-12,12),mz+rand(-12,12),2);
+  for(const q of particles){ q.x+=q.vx*dt; q.y+=q.vy*dt; q.h+=q.vh*dt; q.vh-=300*dt; q.life-=dt; q.vx*=0.95; q.vy*=0.95; }
+  particles = particles.filter(q=>{ if(q.life>0 && q.h>0) return true; scene.remove(q.mesh); return false; });
+
+  // slow cinematic orbit + dolly in
+  const k = clamp(T/8,0,1), r = 320-k*190, th = 0.9+T*0.16, h = 70-k*28;
+  const shk = (T>3.4&&T<6.5)? 2.5:0;
+  camera.position.set(mx+Math.sin(th)*r+rand(-shk,shk), h+rand(-shk,shk), mz+Math.cos(th)*r);
+  camera.lookAt(mx,16,mz);
+  headlight.position.set(mx-20,90,mz+30);
+  headlight.color.setHex(0xffd89a); headlight.intensity = T>3?(0.8+Math.random()*0.5):1.4;   // flickering lamp
+
+  // letterbox, captions, fade
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,W,70); ctx.fillRect(0,H-90,W,90);
+  ctx.textAlign='center'; ctx.fillStyle='#ddd'; ctx.font='20px monospace';
+  let cap='';
+  if(T<2.6) cap='Day 47 of the outbreak. The city went quiet...';
+  else if(T<3.4) cap='He thought he was alone.';
+  else if(T>=7&&T<9.5) cap='Nobody is coming to save you.';
+  else if(T>=9.5) cap='Grab a bike. Loot the houses. Kill them all.';
+  ctx.fillText(cap,W/2,H-45);
+  if(T>3.4&&T<6){ ctx.fillStyle='#e22'; ctx.font='bold 44px monospace'; ctx.fillText('AAAAAHHH!!!',W/2+Math.sin(T*25)*4,H*0.3); }
+  ctx.fillStyle='#777'; ctx.font='14px monospace'; ctx.textAlign='right'; ctx.fillText('ENTER / SPACE to skip',W-16,H-12);
+  if(T>CUT_LEN-1){ ctx.fillStyle=`rgba(0,0,0,${clamp(T-(CUT_LEN-1),0,1)})`; ctx.fillRect(0,0,W,H); }
+  if(T>CUT_LEN) goTitle();
+}
+function goTitle(){ endCut(); clearList(particles); headlight.color.setHex(0xffe9b0); headlight.intensity=1.3; state='title'; }
+
+function onKey(code){
+  audioInit();
+  if(state==='cutscene' && (code==='Enter'||code==='Space')) goTitle();
+  else if(state==='title' && (code==='Enter'||code==='Space')) startGame();
+  else if(state==='dead' && code==='KeyR') startGame();
+}
+
+// ---------- boot ----------
+buildCityData(); buildCityMeshes();
+bikeMesh = makeBike(); scene.add(bikeMesh);
+player = {x:0,y:0,a:0,v:0,aim:0};
+startCut();
+
+let last = performance.now();
+function loop(now){
+  const dt = Math.min(0.05,(now-last)/1000); last = now;
+  ctx.clearRect(0,0,W,H);
+  if(state==='cutscene'){ updateCut(dt); R.render(scene,camera); }
+  else if(state==='title'){ drawTitle(); }
+  else if(state==='play'){ update(dt); syncScene(dt); R.render(scene,camera); drawHUD(); }
+  else if(state==='dead'){ syncScene(dt); R.render(scene,camera); drawDead(); }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
