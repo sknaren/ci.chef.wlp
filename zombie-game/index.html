@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dead Hours - 3D Zombie Survival</title>
+<style>
+  :root { --red:#d63a2f; --amber:#f2b134; --ink:#e9e6df; --panel:rgba(12,14,18,.82); }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:#000; overflow:hidden; font-family: "Segoe UI", system-ui, sans-serif; color:var(--ink); user-select:none; }
+  canvas#c { position:fixed; inset:0; width:100%; height:100%; display:block; }
+  .overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column; text-align:center; z-index:10; }
+  .hidden { display:none !important; }
+  #title { background:radial-gradient(ellipse at center, rgba(10,12,16,.55), rgba(0,0,0,.92)); }
+  h1 { font-size:clamp(40px,8vw,92px); letter-spacing:.12em; margin:0; color:var(--red); text-shadow:0 0 30px rgba(214,58,47,.5); }
+  h1 small { display:block; font-size:.22em; letter-spacing:.5em; color:var(--ink); opacity:.8; }
+  button { font:inherit; font-weight:700; letter-spacing:.12em; padding:14px 34px; background:var(--red); color:#fff; border:0; border-radius:4px; cursor:pointer; text-transform:uppercase; }
+  button:hover { filter:brightness(1.15); }
+  button.alt { background:#2a2f38; padding:8px 14px; }
+  .keys { display:grid; grid-template-columns:auto auto; gap:6px 22px; margin:26px 0; text-align:left; font-size:15px; opacity:.92; }
+  .keys b { color:var(--amber); font-weight:700; }
+  #hud { position:fixed; inset:0; pointer-events:none; z-index:5; }
+  #topbar { position:absolute; top:12px; left:50%; transform:translateX(-50%); background:var(--panel); padding:8px 22px; border-radius:6px; text-align:center; border:1px solid #333; }
+  #clock { font-size:20px; font-weight:800; letter-spacing:.1em; }
+  #clock.night { color:#8fa8ff; } #clock.day { color:var(--amber); }
+  #phasebar { height:5px; background:#222; margin-top:6px; border-radius:3px; overflow:hidden; }
+  #phasefill { height:100%; width:0; background:var(--amber); }
+  #left { position:absolute; left:14px; top:14px; width:230px; }
+  .bar { background:#222; border:1px solid #444; height:16px; border-radius:3px; overflow:hidden; margin-bottom:6px; }
+  .bar > div { height:100%; background:linear-gradient(#e0483c,#a52a22); width:100%; transition:width .15s; }
+  .bar.mate { height:9px; } .bar.mate > div { background:linear-gradient(#5fbf6a,#2f8a3b); }
+  .bar.mate.dead > div { background:#555; }
+  #squad small { display:flex; justify-content:space-between; font-size:11px; opacity:.85; }
+  #bottom { position:absolute; left:14px; bottom:14px; background:var(--panel); padding:10px 14px; border-radius:6px; border:1px solid #333; font-size:15px; line-height:1.55; }
+  #bottom b { color:var(--amber); }
+  #noise { position:absolute; right:14px; bottom:14px; width:190px; background:var(--panel); padding:8px 12px; border-radius:6px; border:1px solid #333; font-size:12px; letter-spacing:.1em; }
+  #noise .bar { height:8px; margin:4px 0 0; } #noise .bar > div { width:0; background:linear-gradient(90deg,#4caf50,#f2b134,#d63a2f); transition:none; }
+  #map { position:absolute; right:14px; top:14px; border:2px solid #333; border-radius:50%; background:rgba(0,0,0,.4); }
+  #prompt { position:absolute; left:50%; bottom:22%; transform:translateX(-50%); background:var(--panel); border:1px solid var(--amber); padding:8px 18px; border-radius:6px; font-size:18px; font-weight:700; color:var(--amber); }
+  #cross { position:absolute; left:50%; top:50%; width:14px; height:14px; margin:-7px 0 0 -7px; border:2px solid rgba(255,255,255,.75); border-radius:50%; }
+  #cross::after { content:""; position:absolute; left:4px; top:4px; width:2px; height:2px; background:#fff; }
+  #toasts { position:absolute; left:50%; top:22%; transform:translateX(-50%); text-align:center; }
+  .toast { font-size:22px; font-weight:800; margin-bottom:6px; text-shadow:0 2px 6px #000; animation:toast 2.4s forwards; }
+  @keyframes toast { 0%{opacity:0; transform:translateY(12px)} 10%{opacity:1; transform:none} 80%{opacity:1} 100%{opacity:0; transform:translateY(-20px)} }
+  #vignette { position:absolute; inset:0; box-shadow:inset 0 0 160px 40px rgba(214,0,0,0); transition:box-shadow .25s; }
+  #banner { position:absolute; left:50%; top:34%; transform:translateX(-50%); font-size:clamp(28px,5vw,60px); font-weight:900; letter-spacing:.2em; opacity:0; text-shadow:0 0 24px #000; transition:opacity .5s; }
+  #lobbyui { position:fixed; z-index:6; left:50%; bottom:5%; transform:translateX(-50%); text-align:center; pointer-events:none; }
+  #lobbyhint { background:var(--panel); border:1px solid var(--amber); padding:10px 18px; border-radius:6px; font-size:18px; font-weight:700; color:var(--amber); display:inline-block; }
+  #lobbyhint:empty { display:none; }
+  #lobbytop { position:fixed; z-index:6; top:14px; left:50%; transform:translateX(-50%); text-align:center; background:var(--panel); padding:8px 22px; border-radius:6px; border:1px solid #333; font-size:14px; }
+  #lobbytop b { color:var(--amber); }
+  #squad-panel { position:fixed; z-index:8; left:50%; top:50%; transform:translate(-50%,-50%); background:var(--panel); border:1px solid #555; border-radius:8px; padding:22px 30px; text-align:center; min-width:430px; }
+  #squad-panel h2 { margin:0 0 4px; letter-spacing:.2em; color:var(--amber); }
+  #slots { display:flex; gap:10px; justify-content:center; margin:18px 0 10px; }
+  .slot { width:62px; height:78px; border:2px dashed #444; border-radius:6px; display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:11px; color:#777; }
+  .slot.on { border:2px solid #5fbf6a; color:#cfe9d2; background:rgba(95,191,106,.12); }
+  .slot.you { border-color:var(--amber); background:rgba(242,177,52,.14); color:var(--amber); }
+  .slot i { font-style:normal; font-size:26px; }
+  #over { background:rgba(60,0,0,.78); }
+  #over h1 { font-size:clamp(34px,6vw,70px); }
+  #fade { position:fixed; inset:0; background:#000; opacity:0; pointer-events:none; transition:opacity .5s; z-index:30; }
+  #fade.on { opacity:1; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="hud" class="hidden">
+  <div id="topbar"><div id="clock">DAY 1</div><div id="phasebar"><div id="phasefill"></div></div></div>
+  <div id="left">
+    <div class="bar"><div id="hpfill"></div></div>
+    <div id="squad"></div>
+  </div>
+  <canvas id="map" width="150" height="150"></canvas>
+  <div id="bottom"></div>
+  <div id="noise">NOISE<div class="bar"><div id="noisefill"></div></div></div>
+  <div id="cross"></div>
+  <div id="prompt" class="hidden"></div>
+  <div id="toasts"></div>
+  <div id="vignette"></div>
+  <div id="banner"></div>
+</div>
+
+<div id="lobbytop" class="hidden">SURVIVOR LOBBY &mdash; walk to a door and press <b>E</b>. Each door holds <b>1&ndash;5</b> survivors.</div>
+<div id="lobbyui" class="hidden"><div id="lobbyhint"></div></div>
+
+<div id="squad-panel" class="hidden">
+  <h2 id="sq-title">DOOR 1</h2>
+  <div style="opacity:.8">Choose how many survivors go through this door</div>
+  <div id="slots"></div>
+  <div style="margin:6px 0 16px"><b id="sq-count">1</b> / 5 survivors &nbsp;&middot;&nbsp; keys <b>1</b>&ndash;<b>5</b> or <b>&uarr;/&darr;</b></div>
+  <button id="sq-start">Start survival (Enter)</button>
+  <button id="sq-leave" class="alt">Leave door (E)</button>
+</div>
+
+<div id="title" class="overlay">
+  <h1>DEAD HOURS<small>3D ZOMBIE SURVIVAL</small></h1>
+  <div class="keys">
+    <div><b>W A S D</b> move &middot; <b>Shift</b> run &middot; <b>C</b> sneak</div>
+    <div><b>Mouse</b> look &middot; <b>Left click</b> shoot / swing</div>
+    <div><b>E</b> open door / cupboard / ride bike</div>
+    <div><b>1</b> pistol &middot; <b>2</b> bat &middot; <b>H</b> heal</div>
+    <div>Bike: <b>W/S</b> throttle &middot; <b>A/D</b> steer</div>
+    <div><b>M</b> mute &middot; <b>Esc</b> free mouse</div>
+  </div>
+  <div style="max-width:620px;opacity:.75;margin-bottom:22px;font-size:14px">Day lasts 2 minutes, night lasts 3. Noise &mdash; gunshots, the bike, running &mdash; draws zombies, and at night they hear far better. Survive until every survivor falls; then the lobby opens again.</div>
+  <button id="playbtn">Enter the lobby</button>
+</div>
+
+<div id="over" class="overlay hidden">
+  <h1>ALL SURVIVORS FELL</h1>
+  <div id="overstats" style="font-size:22px;margin:18px 0 26px;line-height:1.7"></div>
+  <button id="overbtn">Back to lobby (Enter)</button>
+</div>
+<div id="fade"></div>
+
+<script type="importmap">{"imports":{"three":"./lib/three.module.js"}}</script>
+<script type="module" src="./js/game.js"></script>
+</body>
+</html>
